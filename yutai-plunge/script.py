@@ -1,32 +1,112 @@
 # coding: utf-8
 
-# 以下のリンクにまとめた内容で実装する
-#      http://www.doryoku-1mm.tech/entry/2016/07/12/173430　
-# 関数は以下のとおり（２つのクラスにしたほうがいいのかも）
-#   - リターンインデックス（RI）をcsvファイルに保存する
-#     - yutai_dates.csv から優待付きの日付情報をとってくる
-#     - ””月末”” の情報を返してくれるやつ
-#     - 月末の情報を元に、その前後30日分を取得する
-#　　　- 取得した前後30日をRIの形に変える
-#　　　- それをcsvファイルに保存
-#       　-- ccode 優待日付 買うべき日 売るべき日　60日後RI 59日後RI , ... , X day, ... , 59日前RI, 60日前RI
-#   - 「リターンの期待値・リターンの分散・買う日の分散・売る日の分散」を保存。各会社毎にもとめる
-#     - リターンの期待値
-#     - リターンの分散
-#     - 買う日の分散
-#     - 売る日の分散
-#     - これらを保存する
-
 import csv
-years = [2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,2010,2011,2012,2013,2014,2015,2016]
+
+# 関数説明
+#   基準化した値を、fileに保存する
+# 引数について
+#   span : 優待日を基準にした、分析するスパン
+#   file : 保存するfile名を教えてあげる
+#   cond : 何を条件に取得するかの条件。
+#       0 -> 日経平均の変化率で基準化された値
+#       1 -> 乖離率。中心が優待日
+def save_bairitsu(span, path, cond, heikin_day=None):
+    f1 = open('./all_prices.csv', 'rU')
+    all_prices = csv.reader(f1)
+    dates_all_prices = next(all_prices)
+    dates_all_prices.pop(0)
+    f1.close()
+
+    f2 = open('./yutai_dates.csv', 'rU')
+    yutai_dates = csv.reader(f2)
+
+    f3 = open(path, 'a')
+    c = csv.writer(f3)
+
+    for dates in yutai_dates:
+        ccode = dates.pop(0)
+        save_lst = [ccode]
+
+        for date in dates:
+            index_of_yutai_day = dates_all_prices.index(date)
+            lst = get_yutai_row(ccode)
+            if 30 < index_of_yutai_day <= len(lst)-31:
+                norm = []
+                if cond == 0:
+                    norm = get_values_normed_by_nikkei_change_rate(span,  index_of_yutai_day, lst)
+                elif cond == 1:
+                    norm = get_kairi_rate(heikin_day, span, index_of_yutai_day, lst)
+                else:
+                    raise u'該当する条件はまだ存在しません！'
+                # 保存用の文字列に
+                norm_str = map(str,norm)
+                bairitsu = '|'.join(norm_str)
+                save_lst.append(bairitsu)
+            else:
+                pass
+        c.writerow(save_lst)
+        print 'done' + str(ccode)
+
+#優待のある銘柄が記載されている列を返す
+def get_yutai_row(ccode):
+    #該当行を取得するやつ
+    reader = csv.reader(open('./all_prices.csv', 'rU'))
+    row = []
+    for r in reader:
+        code = str(ccode)
+        if code == r[0]:
+            row = r[1:]
+            break
+        else:
+            pass
+    return row
+
+# get_normed_value() , get_normed_nikkei_heikin を呼び出して、変化率で基準化してリストを返す
+def get_values_normed_by_nikkei_change_rate(span, index_of_yutai_day, lst):
+    normed_value = get_normed_value(span, index_of_yutai_day, lst)
+    normed_nikkei = get_normed_nikkei_heikin(span, index_of_yutai_day)
+    tmp_lst = [round(float(x) / float(y),2) for (x,y) in zip(normed_value, normed_nikkei)]
+    return tmp_lst
+
+# values_lst : values_lstを投げる
+def get_normed_value(span, index_of_yutai_day, lst):
+    lst = map(float,lst[index_of_yutai_day-span:index_of_yutai_day+span+1])#必要な期間だけのリストを切り取る
+#    print span
+    values_normed_by_sp = [round(1.0 + float(i-lst[0])/float(lst[0]), 2) for i in lst] # 基準化
+    return values_normed_by_sp
 
 
-# 完璧
+def get_normed_nikkei_heikin(span, index_of_yutai_day):
+    nikkei_heikin_row = get_yutai_row(1330)
+    nikkei_heikin_row = nikkei_heikin_row[1:] # 先頭のccodeを削除する
+    nikkei_around_yutai = map(float,nikkei_heikin_row[index_of_yutai_day-span:index_of_yutai_day+span+1]) #必要な期間の日経平均
+    nikkei_normed_by_sp = [ round(1.0 + float(i-nikkei_around_yutai[0])/float(nikkei_around_yutai[0]),2) for i in nikkei_around_yutai ] # spanで基準化
+    return nikkei_normed_by_sp
+
+# heikin_day : X日移動平均のXの部分
+# index_of_yutai_day : 優待の日のindex
+# lst : all_pricesから取得した注目銘柄の行
+def get_kairi_rate(heikin_day, span, index_of_yutai_day, lst):
+    start = index_of_yutai_day - span - heikin_day
+    end = index_of_yutai_day + span 
+    tmp_lst = map(float, lst[start:end])
+    idou_heikin = [ round(sum(tmp_lst[i:i+heikin_day])/heikin_day, 2) for i in range(span*2) ]
+    values = tmp_lst[heikin_day:]
+    kairi_rates = [ round((x-y)/y*100, 2) for (x,y) in zip(values, idou_heikin)]
+    return kairi_rates
+
+
+# 独立してるやつ
 # 優待日を yutai_dates.csv に保存する
+# f1から割当基準月をゲット
+# f2から割当基準日に該当する年月日を全てゲット
+# f3に全て保存しておく
+
 def end_month_date():
     f1 = open('./yutai_info.csv', 'rU')
     f2 = open('./all_prices.csv', 'rU')
     f3 = open('./yutai_dates.csv', 'a')
+    years = [2000,2001,2002,2003,2004,2005,2006,2007,2008,2009,2010,2011,2012,2013,2014,2015,2016]
 
     yutai_info = csv.reader(f1)
     next(yutai_info) # header を取り除く。
@@ -64,112 +144,3 @@ def end_month_date():
         c.writerow(data_to_save_yutai_dates)
     f2.close()
     f3.close()
-
-# 書き方が間違ってる。
-# save_bairitsu と get_yutai_row で似たような処理があるのか、思ってるように呼び出されないよ
-# 株主優待の日周辺の60日のデータを変化率にしてcsvファイルに保存
-def save_before_and_after_30days():
-    # 全ての市場のデータの取得
-    all_prices = csv.reader(open('./all_prices.csv', 'rU'))
-    market_open_days = next(all_prices)
-
-    # 優待情報の取得ccodeを取らなきゃいけないから。。
-    yutai_dates = csv.reader(open('./yutai_dates.csv', 'rU'))
-
-    # この for で１つの証券番号を回す
-    for yutai_date in yutai_dates:
-        ccode = yutai_date.pop(0)
-        price_around_yutai_day_lst = [ccode]
-        row = get_yutai_row(ccode)
-        price_around_yutai_day = ''
-        print ccode
-        save_bairitsu(row)
-
-    return 'done'
-
-# save_before_and_after_30days で
-#優待のある銘柄が記載されている列を返す
-def get_yutai_row(ccode):
-    #該当行を取得するやつ
-    reader = csv.reader(open('./all_prices.csv', 'rU'))
-    row = []
-    for r in reader:
-        code = str(ccode)
-        if code == r[0]:
-            row = r[1:]
-            break
-        else:
-            pass
-    return row
-
-# save_before_and_after_30days で必要
-# 数字のリストをheader情報を元に
-def save_bairitsu(lst):
-    f1 = open('./all_prices.csv', 'rU')
-    all_prices = csv.reader(f1)
-    header = next(all_prices)
-    header.pop(0)
-    f1.close()
-
-    f2 = open('./yutai_dates.csv', 'rU')
-    yutai_dates = csv.reader(f2)
-
-    f3 = open('./test.csv', 'w')
-#    f3 = open('./normed_yutai_values.csv', 'w')
-    c = csv.writer(f3)
-
-    for date in yutai_dates:
-        ccode = date.pop(0)
-
-        for d in date:
-            norm = []
-            norm_str = ''
-            save_lst = [ccode]
-            bairitsu = ''
-            normed_value = []
-            normed_nikkei = []
-            date_index_all_prices = header.index(d)
-#            try:
-            if 30 < date_index_all_prices <= len(lst)-31:
-                values_lst = map(int,lst[date_index_all_prices-30:date_index_all_prices+31])
-                normed_value = [ round(1.0 + float(i-values_lst[30])/float(values_lst[30]),2) for i in values_lst ]
-                normed_nikkei = get_nikkei_heikin_bairitsu(date_index_all_prices)
-                norm = [round(float(x) / float(y),2) for (x,y) in zip(normed_value, normed_nikkei) ]# value / nikkei をそれぞれ割ったもの
-                norm_str = map(str,norm)
-                bairitsu = '|'.join(norm_str)
-                save_lst.append(bairitsu)
-                c.writerow(save_lst)
-            else:
-                print 'miss'
-#                pass
-#            except:
-#                pass
-
-def get_nikkei_heikin_bairitsu(date_index_all_prices):
-    try:
-        nikkei_heikin_row = get_yutai_row(1330)
-        ccode = nikkei_heikin_row.pop(0)
-        around_nikkei = map(int,nikkei_heikin_row[date_index_all_prices-30:date_index_all_prices+31])
-        normed_nikkei = [ round(1.0 + float(i-around_nikkei[30])/float(around_nikkei[30]),2) for i in around_nikkei ]
-    except:
-        pass
-    return normed_nikkei
-
-def get_bigget_gap(self):
-
-    return u'X day 前後で差が一番開いてる日にちを取得してリストで返す'
-
-def expected_value(self):
-    return u'期待値を返す'
-
-def volatility(self):
-    return u'ボラティリティ' 
-
-def buy_date_volatility(self):
-    return u'買う日の分散を返す'
-
-def sell_date_volatility(self):
-    return u'売る日の分散を返す'
-
-def save_to_csv(self):
-    return u'保存する'
