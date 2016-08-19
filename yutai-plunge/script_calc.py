@@ -21,7 +21,7 @@ import glob
 """
 
 
-def save_format_data(input_path, output_path, cond, z_value=None, heikin_day=None, past_num=None, file=None):
+def save_format_data(input_path, output_path, cond, z_value=None, heikin_day=None, past_num=None):
     '''
         1   2   3     4    5     6    7   8    9    10    11   12   13   14   15   16   17  18   19   20  21 
         1.0|1.0|0.98|0.98|0.99|0.99|1.05|1.05|1.08|1.06|1.04|1.01|1.03|1.06|1.09|1.11|1.1|1.08|1.09|1.09|1.1
@@ -144,6 +144,8 @@ def save_kairi(reader, span, output_path, ccode, z_value, heikin_day, past_num):
         mean = round(np.mean(data), 2)
         kairi_on_z = round(mean + std * z_value, 2)
 
+
+        # ここで一緒にインデックスもとってきて、保存する。
         b_overs = filter(lambda x: abs(x) >= kairi_on_z, lst[i][:span])
         a_overs = filter(lambda x: abs(x) >= kairi_on_z, lst[i][span + 1:])
 
@@ -158,3 +160,182 @@ def save_kairi(reader, span, output_path, ccode, z_value, heikin_day, past_num):
         writer = csv.writer(f2)
         writer.writerow(save_lst)
         f2.close()
+
+
+def save_return_kairi(input_path, output_path, span, heikin_days):
+    """
+    用途
+        kairi_result.csv のデータを元にして、得られる額のリターンを求める。
+    取得するべき値
+        1 Z値を超えた日のインデックスをとる。 (index_yutai_day - 40(span) + index_tmp(超えた日のindex) )
+        2 乖離率の符号が変わった日のインデックス 
+        3 乖離率がmean から 「標準偏差のY倍」　の範囲に入った日のインデックス ( 優待前と後で分けてとる )
+        4 3を満たすインデックスは１つでも取得できれば、その時点で次の処理へ進む
+    計算するもの
+        4 取得したインデックスを用いて、終値の値を取得。
+        5 その終値の値から、得られる額の期待値を求める。
+        6 その期待値は、kairi_result.csv に新しいレコードとして保存する
+    """
+    ccode = int(input_path[-8:-4])
+    ccode = 2001
+    # ある銘柄に対して、[ index_a, index_b, index_c, ...]
+    indexes_yutai_day = get_yutai_index(ccode)
+
+    lst = get_indexes_over_z(ccode, span, heikin_days, input_path)
+
+    # これで、全体の中でのインデックスの位置がわかる
+#     indexes_over_z = indexes_yutai_day - span + indexes_tmp
+
+    #  indexes_over_z を使って、prices/ccode.csv から実際の値を取得して取引。
+
+
+def get_indexes_over_z(ccode, span, heikin_days, input_path):
+    """
+        kairi_result.csv から、zの値をとってきて、
+        KairiNormed/* の該当ファイルから、該当区間でそのZ値よりも大きい日のインデックス取得
+        save_return_kairi の 3番 を計算して取得
+    戻り値
+        [
+            # indexes_yutai_dayのaに対する、売る日t買う日のリスト
+            # ここがsub_lst
+            [
+                [売る日, 買う日]   # こいつらはtmp_lstで
+                [売る日, 買う日]
+            ]
+            # indexes_yutai_day の bに対する、、
+            [
+                [売る日, 買う日]
+                [売る日, 買う日]
+            ]
+        ]
+
+    これをpandasで書き直す
+    """
+
+    # 結果データを用意
+    tmp_df_result = pd.read_csv('./KairiNormedFormated/kairi_result.csv')
+    df_result = tmp_df_result[(tmp_df_result['ccode'] == ccode) & (tmp_df_result['heikin_day'].isin(heikin_days))]
+
+    # これでdf_result と heikin_day が等しいものを行数の揃ったDataFrameになる
+    tmp_df_kairi = pd.read_csv(input_path)
+    df_kairi = tmp_df_kairi[(tmp_df_kairi['heikin_days'].isin(heikin_days)) & (tmp_df_kairi['span'] == 40)]
+
+    # all_prices からデータを取得
+    df_all = pd.read_csv('./prices/' + str(ccode) + '.csv', header=None)
+
+#    past_nums = [5,6,7,8]
+#    for heikin_day in heikin_days:
+#        for past_num in past_nums:
+            # df_kairiの該当箇所を取得して、そのインデックスを０スタートに直す
+
+    past_num = 5
+    heikin_day = 50
+
+    tmp_len = len(df_result[(df_result['heikin_day'] == heikin_day) & (df_result['past_num'] == past_num)])
+    df_kairi = df_kairi[df_kairi['heikin_days'] == heikin_day].iloc[:tmp_len, :]
+    df_kairi.index = range(len(df_kairi))
+
+    # df_result とdf_kairi の行数を揃え、そのインデックスを０スタートに直す
+    df_result_needed = df_result[(df_result['heikin_day'] == 50) & (df_result['past_num'] == 8)][:len(df_kairi)]
+    df_result_needed.index = range(len(df_result_needed))
+
+    # df_kairiを絶対値に直して、計算しやすくしてる
+    # これをやらなければ、if文で場合分けする必要がある
+    # 場合分けしてあげたほうが、そのあとも使えるからいいかも
+    df_kairi_over_z = df_kairi.sub(df_result_needed['kairi_on_z_value'], axis=0)
+    df_kairi_over_z[df_kairi_over_z > 0] = 1
+
+    tmp_df_kairi_rikaku = df_kairi.sub(df_result_needed['mean'], axis=0)
+    df_kairi_rikaku = abs(tmp_df_kairi_rikaku)
+    df_kairi_rikaku[df_kairi_rikaku.sub(df_result_needed['mean'] * 2 / 3, axis=0) <= 0] = 2
+
+    tmp_df_trade = df_kairi_over_z.where(df_kairi_over_z == 1.00, df_kairi_rikaku)
+    df_trade = tmp_df_trade.where((tmp_df_trade == 2.00) | (tmp_df_trade == 1.00), 0).iloc[:, 2:]
+    for i in range(df_trade.shape[0]):
+        try:
+            for j in range(df_trade.shape[1]):
+                cond = df_trade.iloc[i, j]
+                cond_next = df_trade.iloc[i, j + 1]
+                k = 1
+                while cond == cond_next:
+                    df_trade.iloc[i, j + k] = 0.0
+                    k += 1
+                    cond = df_trade.iloc[i, j + k]
+        except IndexError:
+            pass
+
+    # 取引スタートのタイミング 1
+    # 利確のタイミング 2
+    # それ以外0の要素は0の行列(df_trade)の取得に成功！
+    print df_trade
+
+    # df_kairi_25_5 みたいなのをコピーして、それでZ以上なものを取得
+    # これで、乖離率がZ以上のものを取得できる
+    # と思ったら、全部Noneになっちゃう。なんで
+    # インデックスが揃っているものでしか計算しない設計になっている。
+    df_kairi_50_8.iloc[:, 2:][abs(df_kairi_50_8) > df_result['kairi_on_z_value'][(df_result['heikin_day'] == 50) & (df_result['past_num'] == 8)]]
+
+#    print obj = Series([])
+#    print df_kairi_50_8
+    b =  df_result['kairi_on_z_value'][(df_result['heikin_day'] == 50) & (df_result['past_num'] == 8)][:len(df_kairi_50_8)]
+    b.index = range(len(df_kairi_50_8))
+#    print b
+
+    c = abs(df_kairi_50_8)
+    # これは動く
+    # 比較相手がSeriesだと動かない
+    # 多分、行方向のインデックスがあっないから
+    df_kairi_50_8.index = range(len(df_kairi_50_8))
+    d = c.sub(b, axis=0)
+
+    # これで乖離値がZの値より大きいものがとれる
+    print d[d > 0]
+
+
+    return return_lst
+
+
+def get_sell_index(row, x, k, mean, z):
+    return_i = None
+    if x < 0:
+        for i, v in enumerate(row[k + 1:]):
+            if float(v) >= mean:
+                return_i = i
+                break
+            else:
+                pass
+    else:
+        for i, v  in enumerate(row[k + 1:]):
+            if float(v) <= mean:
+                return_i = i
+                break
+            else:
+                pass
+    return return_i
+
+
+def get_yutai_index(ccode):
+    """
+    株主優待の日のindexをリストで返すやつ。
+    """
+    f1 = open('./all_prices.csv', 'rU')
+    all_prices = csv.reader(f1)
+    dates_all_prices = next(all_prices)
+    dates_all_prices.pop(0)
+    f1.close()
+
+    f2 = open('./yutai_dates.csv', 'rU')
+    yutai_dates = csv.reader(f2)
+
+    return_lst = []
+
+    for dates in yutai_dates:
+        row_ccode = dates.pop(0)
+        ccode = str(ccode)
+        if ccode == row_ccode:
+            for date in dates:
+                # 1 の作業中
+                index_yutai_day = dates_all_prices.index(date)
+                return_lst.append(index_yutai_day)
+    # 優待日のindexがベストな順番で帰ってくる。
+    return return_lst
